@@ -52,6 +52,10 @@ var (
 	// nextClientID is an atomic counter for unique client IDs.
 	nextClientID = 1
 	idMutex      sync.Mutex
+
+	// nextFakeClientID is an atomic counter for unique fake client IDs (negative to distinguish).
+	nextFakeClientID = -1
+	fakeIDMutex      sync.Mutex
 )
 
 // --- Structs ---
@@ -62,6 +66,7 @@ type RoomConfig struct {
 	Name           string `json:"name"`
 	MaxPlayers     int    `json:"maxPlayers"`
 	DefaultLatency int    `json:"defaultLatency"`
+	IsMirror       bool   `json:"isMirror,omitempty"`
 }
 
 // Message is a wrapper for messages sent from a client to the hub.
@@ -99,7 +104,8 @@ type Room struct {
 	name       string
 	maxPlayers int
 	latency    int    // This was the field we mistook for maxPlayers
-	status     string // "VACANT", "INGAME"
+	status     string // "VACANT", "INGAME", "LOBBY"
+	isMirror   bool   // New field to indicate if it's a mirror room
 
 	// Registered clients in this room.
 	clients map[*Client]bool
@@ -150,9 +156,10 @@ func newHub(configFile string) *Hub {
 			maxPlayers: cfg.MaxPlayers,
 			latency:    cfg.DefaultLatency,
 			status:     "VACANT",
+			isMirror:   cfg.IsMirror,
 			clients:    make(map[*Client]bool),
 		}
-		log.Printf("Loaded Room %d: '%s' (Max Players: %d, Default Latency: %d)", cfg.ID, cfg.Name, cfg.MaxPlayers, cfg.DefaultLatency)
+		log.Printf("Loaded Room %d: '%s' (Max Players: %d, Default Latency: %d, Is Mirror: %t)", cfg.ID, cfg.Name, cfg.MaxPlayers, cfg.DefaultLatency, cfg.IsMirror)
 	}
 
 	return &Hub{
@@ -331,8 +338,32 @@ func (h *Hub) handleMessage(message *Message) {
 		if client.room == nil {
 			return // Not in a room
 		}
+
 		// The server's job is to just reflect this to everyone in the room.
 		client.room.broadcast(message.data)
+
+		// If this is a mirror room and the message is from the real client,
+		// then send a mirrored frame from the fake client.
+		if client.room.isMirror && client.id > 0 { // client.id > 0 means it's a real client
+			// Find the fake client in the room
+			var fakeClient *Client
+			for fc := range client.room.clients {
+				if fc.id < 0 { // Identify fake client by negative ID
+					fakeClient = fc
+					break
+				}
+			}
+
+			if fakeClient != nil {
+				// Extract the original player ID from the frame message
+				parts := strings.SplitN(msgStr, "\n", 3) // Split into "FRAME", "playerID", "frameData"
+				if len(parts) >= 3 {
+					// Construct the mirrored frame message with the fake client's ID
+					mirroredFrameMsg := fmt.Sprintf("FRAME\n%d\n%s", fakeClient.id, parts[2])
+					client.room.broadcast([]byte(mirroredFrameMsg))
+				}
+			}
+		}
 
 	} else if strings.HasPrefix(msgStr, "CHAT\n") {
 		log.Printf("Received command 'CHAT' from client %d", client.id)
@@ -485,12 +516,36 @@ func (r *Room) addClient(client *Client) {
 	r.clients[client] = true
 	client.room = r
 
-	// If the room was vacant, set it to LOBBY
-	if r.status == "VACANT" {
-		r.status = "LOBBY"
-	}
-	r.mu.Unlock()
-
+			// If the room was vacant, set it to LOBBY
+			if r.status == "VACANT" {
+				r.status = "LOBBY"
+			}
+	
+			// If this is a mirror room and the first real client, add a fake client
+			if r.isMirror && len(r.clients) == 1 { // After adding the real client, count is 1
+				fakeIDMutex.Lock()
+				fakeID := nextFakeClientID
+				nextFakeClientID-- // Decrement for next fake client
+				fakeIDMutex.Unlock()
+	
+				fakeClient := &Client{
+					hub:  client.hub,
+					conn: nil, // No real websocket connection
+					send: make(chan []byte, 256), // Buffered channel for messages
+					id:   fakeID,
+					room: r,
+					name: "MirrorBot", // Default name for fake client
+					p1:   "P1_Fake",
+					p2:   "P2_Fake",
+					p3:   "P3_Fake",
+					p4:   "P4_Fake",
+					achievements: "",
+					status:       "",
+				}
+				r.clients[fakeClient] = true
+				log.Printf("Fake client %d (MirrorBot) added to mirror room %d.", fakeClient.id, r.id)
+			}
+			r.mu.Unlock()
 	log.Printf("Client %d joined room %d (%s)", client.id, r.id, r.name)
 
 	// Broadcast the new player list to everyone in the room.
@@ -521,21 +576,79 @@ func (r *Room) removeClient(client *Client) {
 
 															
 
-																	// If the room is now empty, set its status to VACANT
-
-																	if len(r.clients) == 0 {
-
-																		r.status = "VACANT"
-
-																	}
+																			// If the room is now empty, set its status to VACANT
 
 															
 
-																	// Notify all clients that the room list has been updated
+																			if len(r.clients) == 0 {
 
-																	client.hub.broadcastToAll(client.hub.generateRoomListMessage())
+															
 
-																}}
+																				r.status = "VACANT"
+
+															
+
+																			}
+
+															
+
+																	
+
+															
+
+																			// If this was a mirror room and the last real client left, remove the fake client
+
+															
+
+																			if r.isMirror && len(r.clients) == 1 { // Only the fake client remains
+
+															
+
+																				for fc := range r.clients {
+
+															
+
+																					if fc.id < 0 { // Identify fake client by negative ID
+
+															
+
+																						delete(r.clients, fc)
+
+															
+
+																						log.Printf("Fake client %d (MirrorBot) removed from mirror room %d.", fc.id, r.id)
+
+															
+
+																						break
+
+															
+
+																					}
+
+															
+
+																				}
+
+															
+
+																			}
+
+															
+
+																	
+
+															
+
+																			// Notify all clients that the room list has been updated
+
+															
+
+																			client.hub.broadcastToAll(client.hub.generateRoomListMessage())
+
+															
+
+																		}}
 
 // broadcastPlayerList generates and sends the full PLAYER_LIST to all clients in the room.
 func (r *Room) broadcastPlayerList() {
