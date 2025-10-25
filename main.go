@@ -165,6 +165,65 @@ func newHub(configFile string) *Hub {
 }
 
 // run starts the hub's main loop.
+func (h *Hub) broadcastToAll(message []byte) {
+	for client := range h.clients {
+		select {
+		case client.send <- message:
+		default:
+			// Failed to send, assume client is dead.
+			// Let the hub's unregister logic handle cleanup.
+		}
+	}
+}
+
+// generateRoomListMessage constructs the full LIST message string.
+func (h *Hub) generateRoomListMessage() []byte {
+	var sb strings.Builder
+	sb.WriteString("LIST\n\n") // Start with LIST and the two newlines from log
+
+	roomItems := []string{}
+
+	// Get all room IDs
+	roomIDs := make([]int, 0, len(h.rooms))
+	for id := range h.rooms {
+		roomIDs = append(roomIDs, id)
+	}
+	// Sort the IDs
+	sort.Ints(roomIDs)
+
+	// Iterate over the *sorted* IDs
+	for _, id := range roomIDs {
+		room := h.rooms[id] // Get room from map
+		room.mu.RLock()
+		roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
+			room.id,
+			room.status,
+			room.latency,
+			rand.Intn(4000000),
+			                len(room.clients),
+			            )
+			
+			            // If there are clients, append the first client's name
+			            if len(room.clients) > 0 {
+			                // Get the first client (order doesn't matter for just the name)
+			                for client := range room.clients {
+			                    roomStr = fmt.Sprintf("%s\n%s", roomStr, client.name)
+			                    break // Only need the first one
+			                }
+			            }
+			            room.mu.RUnlock()
+			            roomItems = append(roomItems, roomStr)	}
+
+	// Prepend the first separator (as seen in the log)
+	if len(roomItems) > 0 {
+		sb.WriteString("¶\n")
+	}
+	// Join the rest, separated by the same marker
+	sb.WriteString(strings.Join(roomItems, "\n\n¶\n"))
+
+	return []byte(sb.String())
+}
+
 func (h *Hub) run() {
 	for {
 		select {
@@ -207,54 +266,12 @@ func (h *Hub) handleMessage(message *Message) {
 	// This handles commands with no args ("LIST"), commands with space args ("LEAVE 2"),
 	// and commands with newline args ("JOIN\n...")
 
-	if msgStr == "LIST" {
-		log.Printf("Received command 'LIST' from client %d", client.id)
-		// Client requests the room list.
-		// "LIST\n\n¶\nRoom\n1\nVACANT\n3\n6071\n0\n\n¶\nRoom..."
-		var sb strings.Builder
-		sb.WriteString("LIST\n\n") // Start with LIST and the two newlines from log
-
-		roomItems := []string{}
-
-		// --- FIX 1: Sort the rooms by ID ---
-		// Get all room IDs
-		roomIDs := make([]int, 0, len(h.rooms))
-		for id := range h.rooms {
-			roomIDs = append(roomIDs, id)
-		}
-		// Sort the IDs
-		sort.Ints(roomIDs)
-
-		// Iterate over the *sorted* IDs
-		for _, id := range roomIDs {
-			room := h.rooms[id] // Get room from map
-			room.mu.RLock()
-			// --- FIX 2: Change format from `room.name` to literal "Room" ---
-			// Real format: "Room\n<ID>\n<Status>\n<Latency>\n<Unknown>\n<Players>"
-			roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
-				// "Room" (literal string)
-				room.id,           // 1
-				room.status,       // "VACANT"
-				room.latency,      // e.g., 3 (Default Latency)
-				rand.Intn(4000000), // <-- FIX 1: Use random number, not 6071
-				len(room.clients), // CurrentPlayers
-			)
-			room.mu.RUnlock()
-			roomItems = append(roomItems, roomStr)
-		}
-
-		// Prepend the first separator (as seen in the log)
-		if len(roomItems) > 0 {
-			sb.WriteString("¶\n")
-		}
-		// Join the rest, separated by the same marker
-		sb.WriteString(strings.Join(roomItems, "\n\n¶\n"))
-
-		// Send the list back to *only* the requesting client.
-		client.send <- []byte(sb.String())
-
-	} else if strings.HasPrefix(msgStr, "JOIN\n") {
-		log.Printf("Received command 'JOIN' from client %d", client.id)
+			if msgStr == "LIST" {
+			log.Printf("Received command 'LIST' from client %d", client.id)
+			// Client requests the room list.
+			client.send <- h.generateRoomListMessage()
+	
+		} else if strings.HasPrefix(msgStr, "JOIN\n") {		log.Printf("Received command 'JOIN' from client %d", client.id)
 		parts := strings.Split(msgStr, "\n")
 		// Client wants to join a room.
 		// "JOIN\n1\ndoix\nP1\nP2\nP3\nP4\n<achievements...>"
@@ -344,28 +361,53 @@ func (h *Hub) handleMessage(message *Message) {
 			seed := rand.Intn(1000000) // Generate a random seed
 			startMsg := fmt.Sprintf("ROOM_NOW_STARTED\n%d\n%d", room.id, seed)
 			room.broadcast([]byte(startMsg))
+
+			// Notify all clients that the room list has been updated
+			h.broadcastToAll(h.generateRoomListMessage())
 		}
 		// --- END FIX ---
 
-	} else if strings.HasPrefix(msgStr, "LEAVE ") { // THE FIX
-		log.Printf("Received command 'LEAVE' from client %d", client.id)
-		// Client gracefully leaves the room
-		// Log shows "LEAVE 2", so we split by space
-		parts := strings.Split(msgStr, " ")
-		if len(parts) < 2 {
-			return
-		}
-		roomID, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return
-		}
+		} else if strings.HasPrefix(msgStr, "LEAVE\n") {
 
-		// Check if client is actually in that room
-		if client.room != nil && client.room.id == roomID {
-			client.room.removeClient(client)
-		} else {
-			log.Printf("Client %d tried to LEAVE room %d but isn't in it.", client.id, roomID)
-		}
+			log.Printf("Received command 'LEAVE' from client %d", client.id)
+
+			// Client gracefully leaves the room
+
+			parts := strings.Split(msgStr, "\n")
+
+			if len(parts) < 2 {
+
+				return
+
+			}
+
+			roomID, err := strconv.Atoi(parts[1])
+
+			if err != nil {
+
+				return
+
+			}
+
+	
+
+			// Check if client is actually in that room
+
+			if client.room != nil && client.room.id == roomID {
+
+				client.room.removeClient(client)
+
+				// Send LEFT_ROOM message back to the client
+
+				client.send <- []byte(fmt.Sprintf("LEFT_ROOM\n%d", roomID))
+
+			} else {
+
+				log.Printf("Client %d tried to LEAVE room %d but isn't in it.", client.id, roomID)
+
+			}
+
+	
 
 	} else if strings.HasPrefix(msgStr, "AWAY\n") {
 		log.Printf("Received command 'AWAY' from client %d", client.id)
@@ -442,12 +484,20 @@ func (r *Room) addClient(client *Client) {
 	r.mu.Lock()
 	r.clients[client] = true
 	client.room = r
+
+	// If the room was vacant, set it to LOBBY
+	if r.status == "VACANT" {
+		r.status = "LOBBY"
+	}
 	r.mu.Unlock()
 
 	log.Printf("Client %d joined room %d (%s)", client.id, r.id, r.name)
 
 	// Broadcast the new player list to everyone in the room.
 	r.broadcastPlayerList()
+
+	// Notify all clients that the room list has been updated
+	client.hub.broadcastToAll(client.hub.generateRoomListMessage())
 }
 
 // removeClient removes a client from the room and broadcasts the new list.
@@ -461,12 +511,31 @@ func (r *Room) removeClient(client *Client) {
 	}
 	r.mu.Unlock()
 
-	if left {
-		log.Printf("Client %d left room %d (%s)", client.id, r.id, r.name)
-		// Broadcast the updated player list to remaining clients
-		r.broadcastPlayerList()
-	}
-}
+															if left {
+
+																	log.Printf("Client %d left room %d (%s)", client.id, r.id, r.name)
+
+																	// Broadcast the updated player list to remaining clients
+
+																	r.broadcastPlayerList()
+
+															
+
+																	// If the room is now empty, set its status to VACANT
+
+																	if len(r.clients) == 0 {
+
+																		r.status = "VACANT"
+
+																	}
+
+															
+
+																	// Notify all clients that the room list has been updated
+
+																	client.hub.broadcastToAll(client.hub.generateRoomListMessage())
+
+																}}
 
 // broadcastPlayerList generates and sends the full PLAYER_LIST to all clients in the room.
 func (r *Room) broadcastPlayerList() {
