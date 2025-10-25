@@ -33,6 +33,9 @@ const (
 
 	// Game version to check against the client
 	gameVersion = 2143
+
+	// MirrorBot achievements string
+	mirrorBotAchievements = "STAGE_1_EASY,STAGE_1_NORMAL,STAGE_1_DIFFICULT,STAGE_1_CRAZY,STAGE_2_EASY,STAGE_2_NORMAL,STAGE_2_DIFFICULT,STAGE_2_CRAZY,STAGE_3_EASY,STAGE_3_NORMAL,STAGE_3_DIFFICULT,STAGE_3_CRAZY,STAGE_4_EASY,STAGE_4_NORMAL,STAGE_4_DIFFICULT,STAGE_4_CRAZY,STAGE_5_EASY,STAGE_5_NORMAL,STAGE_5_DIFFICULT,STAGE_5_CRAZY,GOLD_DAVIS,GOLD_WOODY,GOLD_DENNIS,GOLD_FREEZE,GOLD_FIREN,GOLD_LOUIS,GOLD_RUDOLF,GOLD_HENRY,GOLD_JOHN,GOLD_DEEP,GOLD_BAT,GOLD_LOUISEX,GOLD_FIRZEN,GOLD_JULIAN,SILVER_DAVIS,SILVER_WOODY,SILVER_DENNIS,SILVER_FREEZE,SILVER_FIREN,SILVER_LOUIS,SILVER_RUDOLF,SILVER_HENRY,SILVER_JOHN,SILVER_DEEP,SILVER_BAT,SILVER_LOUISEX,SILVER_FIRZEN,SILVER_JULIAN,BRONZE_DAVIS,BRONZE_WOODY,BRONZE_DENNIS,BRONZE_FREEZE,BRONZE_FIREN,BRONZE_LOUIS,BRONZE_RUDOLF,BRONZE_HENRY,BRONZE_JOHN,BRONZE_DEEP,BRONZE_BAT,BRONZE_LOUISEX,BRONZE_FIRZEN,BRONZE_JULIAN,SURVIVAL_10,SURVIVAL_20,SURVIVAL_30,SURVIVAL_40,SURVIVAL_50,SURVIVAL_60,SURVIVAL_70,SURVIVAL_80,SURVIVAL_90,SURVIVAL_100,COOP_2P,COOP_3P,COOP_4P,COOP_6P,COOP_8P,MODE_VS1,MODE_VS2,MODE_BATTLE1,MODE_BATTLE2,MODE_1_ON_1_CHAMP,MODE_2_ON_2_CHAMP"
 )
 
 // --- Globals ---
@@ -53,8 +56,8 @@ var (
 	nextClientID = 1
 	idMutex      sync.Mutex
 
-	// nextFakeClientID is an atomic counter for unique fake client IDs (negative to distinguish).
-	nextFakeClientID = -1
+	// nextFakeClientID is an atomic counter for unique fake client IDs (starting from a high number to distinguish).
+	nextFakeClientID = 999999
 	fakeIDMutex      sync.Mutex
 )
 
@@ -164,7 +167,7 @@ func newHub(configFile string) *Hub {
 		if cfg.IsMirror {
 			fakeIDMutex.Lock()
 			fakeID := nextFakeClientID
-			nextFakeClientID-- // Decrement for next fake client
+			nextFakeClientID++ // Increment for next fake client
 			fakeIDMutex.Unlock()
 
 			fakeClient := &Client{
@@ -181,6 +184,7 @@ func newHub(configFile string) *Hub {
 				achievements: "",
 				status:       "",
 			}
+				
 			rooms[cfg.ID].clients[fakeClient] = true
 			log.Printf("MirrorBot %d added to mirror room %d during initialization.", fakeClient.id, cfg.ID)
 		}
@@ -192,7 +196,7 @@ func newHub(configFile string) *Hub {
 	for _, room := range rooms {
 		if room.isMirror {
 			for client := range room.clients {
-				if client.id < 0 { // Identify fake client
+				if client.id >= 999999 { // Identify fake client
 					client.hub = &Hub{rooms: rooms} // Temporarily set hub for fake client
 					log.Printf("Set hub for MirrorBot %d in room %d.", client.id, room.id)
 					break
@@ -250,31 +254,41 @@ func (h *Hub) generateRoomListMessage() []byte {
 
 	for _, id := range roomIDs {
 
-		room := h.rooms[id] // Get room from map
+				room := h.rooms[id] // Get room from map
 
-		room.mu.RLock()
+				room.mu.RLock()
 
-		// Calculate effective player count for display
+				log.Printf("generateRoomListMessage: Room %d: status = %s, isMirror = %t, len(clients) = %d", room.id, room.status, room.isMirror, len(room.clients))
 
-		effectivePlayerCount := len(room.clients)
+				// Calculate effective player count for display
 
-		displayStatus := room.status
+				effectivePlayerCount := len(room.clients)
 
-		if room.isMirror {
+		
 
-			if room.status == "INGAME" {
+				displayStatus := room.status
 
-				displayStatus = "INGAME"
+				if room.isMirror {
 
-			} else {
+					if room.status == "INGAME" {
 
-				displayStatus = "LOBBY" // Mirror room is never truly VACANT
+						displayStatus = "INGAME"
 
-			}
+					} else {
 
-		}
+						displayStatus = "LOBBY" // Mirror room is never truly VACANT
 
-		roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
+					}
+
+				}
+
+				log.Printf("generateRoomListMessage: Room %d: displayStatus = %s, effectivePlayerCount = %d", room.id, displayStatus, effectivePlayerCount)
+
+		
+
+				roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
+
+		
 
 			room.id,
 
@@ -447,7 +461,7 @@ func (h *Hub) handleMessage(message *Message) {
 			// Find the fake client in the room
 			var fakeClient *Client
 			for fc := range client.room.clients {
-				if fc.id < 0 { // Identify fake client by negative ID
+				if fc.id >= 999999 { // Identify fake client by high ID
 					fakeClient = fc
 					break
 				}
@@ -575,6 +589,19 @@ func (h *Hub) handleMessage(message *Message) {
 		msg := fmt.Sprintf("UPDATE_ACHIEVEMENTS\n%d\n%s", client.id, client.achievements)
 		client.room.broadcast([]byte(msg))
 
+		// If this is a mirror room and the message is from the real client,
+		// then update the fake client's achievements as well.
+		if client.room.isMirror && client.id > 0 { // client.id > 0 means it's a real client
+			// Find the fake client in the room
+			for fc := range client.room.clients {
+				if fc.id >= 999999 { // Identify fake client
+					fc.achievements = client.achievements
+					log.Printf("MirrorBot %d achievements updated to match client %d via UPDATE_ACHIEVEMENTS.", fc.id, client.id)
+					break
+				}
+			}
+		}
+
 	} else if strings.HasPrefix(msgStr, "CHANGE_LATENCY\n") {
 		log.Printf("Received command 'CHANGE_LATENCY' from client %d", client.id)
 		// Client (host?) changes the game latency
@@ -619,6 +646,17 @@ func (r *Room) addClient(client *Client) {
 
 	log.Printf("Client %d joined room %d (%s)", client.id, r.id, r.name)
 
+	// If it's a mirror room, update the MirrorBot's achievements to match the real client's
+	if r.isMirror {
+		for fc := range r.clients {
+			if fc.id >= 999999 { // Identify fake client
+				fc.achievements = client.achievements
+				log.Printf("MirrorBot %d achievements updated to match client %d.", fc.id, client.id)
+				break
+			}
+		}
+	}
+
 	// Broadcast the new player list to everyone in the room.
 	r.broadcastPlayerList()
 
@@ -649,7 +687,7 @@ func (r *Room) removeClient(client *Client) {
 			r.status = "LOBBY" // Reset mirror room to LOBBY
 			// Clear MirrorBot's associated player data
 			for fc := range r.clients {
-				if fc.id < 0 { // Identify fake client by negative ID
+				if fc.id >= 999999 { // Identify fake client by high ID
 					fc.name = "MirrorBot"
 					fc.p1 = "P1_Fake"
 					fc.p2 = "P2_Fake"
