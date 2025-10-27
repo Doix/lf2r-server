@@ -33,9 +33,6 @@ const (
 
 	// Game version to check against the client
 	gameVersion = 2143
-
-	// MirrorBot achievements string
-	mirrorBotAchievements = "STAGE_1_EASY,STAGE_1_NORMAL,STAGE_1_DIFFICULT,STAGE_1_CRAZY,STAGE_2_EASY,STAGE_2_NORMAL,STAGE_2_DIFFICULT,STAGE_2_CRAZY,STAGE_3_EASY,STAGE_3_NORMAL,STAGE_3_DIFFICULT,STAGE_3_CRAZY,STAGE_4_EASY,STAGE_4_NORMAL,STAGE_4_DIFFICULT,STAGE_4_CRAZY,STAGE_5_EASY,STAGE_5_NORMAL,STAGE_5_DIFFICULT,STAGE_5_CRAZY,GOLD_DAVIS,GOLD_WOODY,GOLD_DENNIS,GOLD_FREEZE,GOLD_FIREN,GOLD_LOUIS,GOLD_RUDOLF,GOLD_HENRY,GOLD_JOHN,GOLD_DEEP,GOLD_BAT,GOLD_LOUISEX,GOLD_FIRZEN,GOLD_JULIAN,SILVER_DAVIS,SILVER_WOODY,SILVER_DENNIS,SILVER_FREEZE,SILVER_FIREN,SILVER_LOUIS,SILVER_RUDOLF,SILVER_HENRY,SILVER_JOHN,SILVER_DEEP,SILVER_BAT,SILVER_LOUISEX,SILVER_FIRZEN,SILVER_JULIAN,BRONZE_DAVIS,BRONZE_WOODY,BRONZE_DENNIS,BRONZE_FREEZE,BRONZE_FIREN,BRONZE_LOUIS,BRONZE_RUDOLF,BRONZE_HENRY,BRONZE_JOHN,BRONZE_DEEP,BRONZE_BAT,BRONZE_LOUISEX,BRONZE_FIRZEN,BRONZE_JULIAN,SURVIVAL_10,SURVIVAL_20,SURVIVAL_30,SURVIVAL_40,SURVIVAL_50,SURVIVAL_60,SURVIVAL_70,SURVIVAL_80,SURVIVAL_90,SURVIVAL_100,COOP_2P,COOP_3P,COOP_4P,COOP_6P,COOP_8P,MODE_VS1,MODE_VS2,MODE_BATTLE1,MODE_BATTLE2,MODE_1_ON_1_CHAMP,MODE_2_ON_2_CHAMP"
 )
 
 // --- Globals ---
@@ -107,7 +104,7 @@ type Room struct {
 	name       string
 	maxPlayers int
 	latency    int    // This was the field we mistook for maxPlayers
-	status     string // "VACANT", "INGAME", "LOBBY"
+	status     string // "VACANT", "LOBBY", "STARTED"
 	isMirror   bool   // New field to indicate if it's a mirror room
 
 	// Registered clients in this room.
@@ -270,11 +267,11 @@ func (h *Hub) generateRoomListMessage() []byte {
 
 				if room.isMirror {
 
-					if room.status == "INGAME" {
+										if room.status == "STARTED" {
 
-						displayStatus = "INGAME"
+											displayStatus = "STARTED"
 
-					} else {
+										} else {
 
 						displayStatus = "LOBBY" // Mirror room is never truly VACANT
 
@@ -421,7 +418,7 @@ func (h *Hub) handleMessage(message *Message) {
 			client.send <- []byte(fmt.Sprintf("UNABLE_TO_JOIN\n%d\nROOM_FULL", roomID))
 			return
 		}
-		if room.status == "INGAME" {
+		if room.status == "STARTED" {
 			room.mu.RUnlock()
 			log.Printf("Client %d failed to join room %d: INVALID_STATUS (game started)", client.id, roomID)
 			client.send <- []byte(fmt.Sprintf("UNABLE_TO_JOIN\n%d\nINVALID_STATUS", roomID))
@@ -497,7 +494,7 @@ func (h *Hub) handleMessage(message *Message) {
 			log.Printf("Game start triggered by client %d in room %d", client.id, client.room.id)
 			room := client.room
 			room.mu.Lock()
-			room.status = "INGAME"
+			room.status = "STARTED"
 			room.mu.Unlock()
 
 			// Also broadcast the game start message
