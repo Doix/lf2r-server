@@ -181,7 +181,7 @@ func newHub(configFile string) *Hub {
 				achievements: "",
 				status:       "",
 			}
-				
+
 			rooms[cfg.ID].clients[fakeClient] = true
 			log.Printf("MirrorBot %d added to mirror room %d during initialization.", fakeClient.id, cfg.ID)
 		}
@@ -251,41 +251,35 @@ func (h *Hub) generateRoomListMessage() []byte {
 
 	for _, id := range roomIDs {
 
-				room := h.rooms[id] // Get room from map
+		room := h.rooms[id] // Get room from map
 
-				room.mu.RLock()
+		room.mu.RLock()
 
-				log.Printf("generateRoomListMessage: Room %d: status = %s, isMirror = %t, len(clients) = %d", room.id, room.status, room.isMirror, len(room.clients))
+		log.Printf("generateRoomListMessage: Room %d: status = %s, isMirror = %t, len(clients) = %d", room.id, room.status, room.isMirror, len(room.clients))
 
-				// Calculate effective player count for display
+		// Calculate effective player count for display
 
-				effectivePlayerCount := len(room.clients)
+		effectivePlayerCount := len(room.clients)
 
-		
+		displayStatus := room.status
 
-				displayStatus := room.status
+		if room.isMirror {
 
-				if room.isMirror {
+			if room.status == "STARTED" {
 
-										if room.status == "STARTED" {
+				displayStatus = "STARTED"
 
-											displayStatus = "STARTED"
+			} else {
 
-										} else {
+				displayStatus = "LOBBY" // Mirror room is never truly VACANT
 
-						displayStatus = "LOBBY" // Mirror room is never truly VACANT
+			}
 
-					}
+		}
 
-				}
+		log.Printf("generateRoomListMessage: Room %d: displayStatus = %s, effectivePlayerCount = %d", room.id, displayStatus, effectivePlayerCount)
 
-				log.Printf("generateRoomListMessage: Room %d: displayStatus = %s, effectivePlayerCount = %d", room.id, displayStatus, effectivePlayerCount)
-
-		
-
-				roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
-
-		
+		roomStr := fmt.Sprintf("Room\n%d\n%s\n%d\n%d\n%d",
 
 			room.id,
 
@@ -853,11 +847,13 @@ func createDefaultConfig(filename string) {
 	// Create default config based on original logs
 	defaultRooms := []RoomConfig{}
 	for i := 1; i <= 8; i++ {
+		isMirror := i <= 4 // Set isMirror to true for the first half of the rooms
 		defaultRooms = append(defaultRooms, RoomConfig{
 			ID:             i,
 			Name:           fmt.Sprintf("Room %d", i),
 			MaxPlayers:     8, // This is for the server-side ROOM_FULL check
 			DefaultLatency: 3, // This is what's sent to the client
+			IsMirror:       isMirror,
 		})
 	}
 
